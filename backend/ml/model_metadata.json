@@ -1,0 +1,28 @@
+{
+  "model_name": "Neural Network",
+  "test_rmse": 675.9373282101246,
+  "features_used": [
+    "Order Date",
+    "Ship Date",
+    "Ship Mode",
+    "Segment",
+    "Country",
+    "State",
+    "Postal Code",
+    "Region",
+    "Category",
+    "Sub-Category",
+    "Quantity",
+    "Discount",
+    "Order Year",
+    "Order Month",
+    "Order Day",
+    "Order Weekday",
+    "Ship Year",
+    "Ship Month",
+    "Ship Day",
+    "Ship Weekday",
+    "is_holiday",
+    "is_weekend"
+  ]
+}

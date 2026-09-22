@@ -9,7 +9,7 @@ Original file is located at
 #Import libraries
 """
 
-!pip install feature_engine
+#!pip install feature_engine
 
 # Commented out IPython magic to ensure Python compatibility.
 import numpy as np
@@ -18,10 +18,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
-# %matplotlib inline
 import warnings
 warnings.filterwarnings('ignore')
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import train_test_split, cross_val_score, KFold, RandomizedSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, mean_absolute_percentage_error, r2_score
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
@@ -96,22 +96,22 @@ fig.update_traces(
 fig.update_layout(showlegend=True)
 
 # Show plot
-fig.show()
+# fig.show()
 
 plt.figure(figsize=(10,5))
 sns.barplot(x='Category',y='Sales',data=df,palette='rocket')
 plt.title('Category vs Sales',pad=20,fontsize=20,fontweight='bold')
-plt.show()
+# plt.show()
 
 plt.figure(figsize=(10,5))
 sns.barplot(x='Category',y='Profit',data=df,palette='magma')
 plt.title('Category vs Profit',pad=20,fontsize=20,fontweight='bold')
-plt.show()
+# plt.show()
 
 plt.figure(figsize=(10,5))
 sns.barplot(x='Category',y='Discount',data=df,palette='viridis')
 plt.title('Category vs Discount',pad=20,fontsize=20,fontweight='bold')
-plt.show()
+# plt.show()
 
 """##Customer Segment Analysis"""
 
@@ -139,17 +139,17 @@ fig.update_traces(
 fig.update_layout(showlegend=True)
 
 # Show interactive chart
-fig.show()
+# fig.show()
 
 plt.figure(figsize=(10,5))
 sns.barplot(x='Segment',y='Profit',data=df,palette='magma')
 plt.title('Segment vs Profit',pad=20,fontsize=20,fontweight='bold')
-plt.show()
+# plt.show()
 
 plt.figure(figsize=(10,5))
 sns.barplot(x='Segment',y='Discount',data=df,palette='viridis')
 plt.title('Segment vs Discount',pad=20,fontsize=20,fontweight='bold')
-plt.show()
+# plt.show()
 
 df['Ship Mode'].value_counts()
 
@@ -229,7 +229,7 @@ fig_region.update_layout(
     )]
 )
 
-fig_region.show()
+# fig_region.show()
 
 """##Super store Sales Overview Dashboard"""
 
@@ -238,9 +238,6 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import plotly.io as pio
-
-# Load the data
-df = pd.read_excel('Superstore.xlsx', sheet_name='Orders')
 
 # Create interactive plots
 
@@ -388,7 +385,7 @@ fig.update_layout(
                ticktext=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']), # Explicitly label weekdays
     legend_title='Category'
 )
-fig.show()
+# fig.show()
 
 fig = px.scatter(df, x='Price_per_item', y='Quantity', color='Category',
                  size='Sales',  # Use 'Sales' or 'Profit' for bubble size
@@ -407,7 +404,7 @@ fig.update_layout(
     ]
 )
 
-fig.show()
+# fig.show()
 
 """##Correlation Analysis"""
 
@@ -418,7 +415,7 @@ plt.figure(figsize=(10,5))
 numerical_df = df.select_dtypes(include=np.number)
 fig = sns.heatmap(numerical_df.corr(),annot=True,cmap='RdYlGn',vmin=-1.0,vmax=1.0)
 plt.title('Correlation Heatmap',pad=20,fontsize=20,fontweight='bold')
-plt.show()
+# plt.show()
 plt.close('all')
 del fig
 import gc
@@ -561,7 +558,7 @@ fig.add_annotation(
     font=dict(size=10, color="grey")
 )
 
-fig.show()
+# fig.show()
 
 """##Categorical Encoding"""
 
@@ -584,7 +581,10 @@ df['Product Name'].nunique()
 """#Modeling"""
 
 # Define features and target
-X = df.drop(['Sales', 'Order ID', 'Customer Name', 'Product Name'], axis=1)
+X = df.drop(['Sales', 'Order ID', 'Customer Name', 'Product Name',
+             'Customer ID', 'Product ID', 'City',
+             'Profit', 'Profit Margin', 'Discounted Profit',
+             'Discount Percentage', 'Price_per_item', 'Profit_per_item'], axis=1)
 y = df['Sales']
 
 # Split data
@@ -615,86 +615,83 @@ preprocessor = ColumnTransformer(
 # Feature selection
 feature_selector = SelectKBest(score_func=f_regression, k=15)
 
-# Models to evaluate
-models = {
-    'Linear Regression': LinearRegression(),
-    'Random Forest': RandomForestRegressor(random_state=42),
-    'XGBoost': XGBRegressor(random_state=42),
-    'Neural Network': MLPRegressor(random_state=42)
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# Only Random Forest and XGBoost get tuned -- they have hyperparameters
+# worth searching. Linear Regression has none, MLP tuning cost more
+# compute than the gain it showed.
+param_grids = {
+    'Random Forest': {'model__n_estimators': [100, 200, 300], 'model__max_depth': [None, 10, 20], 'model__min_samples_split': [2, 5]},
+    'XGBoost': {'model__n_estimators': [100, 200, 300], 'model__max_depth': [3, 5, 7], 'model__learning_rate': [0.05, 0.1, 0.2]},
 }
 
-# Evaluation function
-def evaluate_model(model, X_train, y_train, X_test, y_test):
-    # Create pipeline
+base_models = {
+    'Linear Regression': LinearRegression(),
+    'Random Forest': RandomForestRegressor(random_state=42),
+    'XGBoost': XGBRegressor(random_state=42, verbosity=0),
+    'Neural Network': MLPRegressor(random_state=42, max_iter=1000)
+}
+
+results = []
+best_cv_rmse = float('inf')
+best_test_rmse = None
+best_model = None
+best_pipeline = None
+
+for name, model in base_models.items():
     pipeline = Pipeline(steps=[
         ('preprocessor', preprocessor),
         ('feature_selector', feature_selector),
         ('model', model)
     ])
 
-    # Fit and predict
-    pipeline.fit(X_train, y_train)
-    y_train_pred = pipeline.predict(X_train)
+    if name in param_grids:
+        search = RandomizedSearchCV(pipeline, param_grids[name], n_iter=6, cv=kf,
+                                     scoring='neg_root_mean_squared_error',
+                                     random_state=42, n_jobs=-1)
+        search.fit(X_train, y_train)
+        fitted_pipeline = search.best_estimator_
+        cv_rmse = -search.best_score_
+        best_params = search.best_params_
+    else:
+        cv_scores = cross_val_score(pipeline, X_train, y_train, cv=kf,
+                                     scoring='neg_root_mean_squared_error', n_jobs=-1)
+        cv_rmse = -cv_scores.mean()
+        fitted_pipeline = pipeline.fit(X_train, y_train)
+        best_params = 'default'
+
+    y_train_pred = fitted_pipeline.predict(X_train)
+    y_test_pred = fitted_pipeline.predict(X_test)
 
     train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
-    train_mae = mean_absolute_error(y_train, y_train_pred)
-    train_r2 = r2_score(y_train, y_train_pred)
-
-    # Test predictions
-    y_test_pred = pipeline.predict(X_test)
     test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
     test_mae = mean_absolute_error(y_test, y_test_pred)
     test_r2 = r2_score(y_test, y_test_pred)
 
-    return {
-        'train_rmse': train_rmse,
-        'train_mae': train_mae,
-        'train_r2': train_r2,
-        'test_rmse': test_rmse,
-        'test_mae': test_mae,
-        'test_r2': test_r2,
-        'pipeline': pipeline
-    }
-
-# Evaluation
-results = []
-best_test_rmse = float('inf')
-best_model = None
-best_pipeline = None
-
-for name, model in models.items():
-    metrics = evaluate_model(model, X_train, y_train, X_test, y_test)
-
     results.append({
-        'Model': name,
-        'Train RMSE': metrics['train_rmse'],
-        'Test RMSE': metrics['test_rmse'],
-        'Train MAE': metrics['train_mae'],
-        'Test MAE': metrics['test_mae'],
-        'Train R2': metrics['train_r2'],
-        'Test R2': metrics['test_r2']
+        'Model': name, 'CV RMSE': cv_rmse, 'Train RMSE': train_rmse,
+        'Test RMSE': test_rmse, 'Test MAE': test_mae, 'Test R2': test_r2,
+        'Best Params': best_params
     })
 
-    if metrics['test_rmse'] < best_test_rmse:
-        best_test_rmse = metrics['test_rmse']
+    if cv_rmse < best_cv_rmse:
+        best_cv_rmse = cv_rmse
+        best_test_rmse = test_rmse
         best_model = name
-        best_pipeline = metrics['pipeline']
+        best_pipeline = fitted_pipeline
 
-# Display results
 results_df = pd.DataFrame(results)
 print("\n" + "="*80)
-print("Model Evaluation Results (All Metrics)")
+print("Model Evaluation Results (5-fold CV + tuning)")
 print("="*80)
-display(results_df.sort_values('Test RMSE'))
+print(results_df.drop(columns='Best Params').sort_values('Test RMSE').to_string(index=False))
 
 print(f"\nBest Model: {best_model} (Test RMSE: {best_test_rmse:.2f})")
 
-avg_sales = y_test.mean()  # Average sale value
-error_ratio = 288.513420 / avg_sales * 10  # Error as % of average
+avg_sales = y_test.mean()
 print(f"Average Sale: ${avg_sales:.2f}")
-print(error_ratio)
+print(f"Test RMSE as % of average sale: {best_test_rmse/avg_sales*100:.2f}%")
 
-# Residual analysis for the best model
 y_pred = best_pipeline.predict(X_test)
 residuals = y_test - y_pred
 
@@ -712,7 +709,7 @@ plt.xlabel('Residual Value')
 plt.ylabel('Frequency')
 plt.title('Residual Distribution')
 plt.tight_layout()
-plt.show()
+# plt.show()
 
 # Actual vs Predicted plot
 plt.figure(figsize=(8, 6))
@@ -721,4 +718,77 @@ plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--')
 plt.xlabel('Actual Sales')
 plt.ylabel('Predicted Sales')
 plt.title(f'Actual vs Predicted Sales - {best_model}')
-plt.show()
+# plt.show()
+
+import joblib
+import json
+
+# This saves the WHOLE pipeline object -- preprocessing steps,
+# feature selector, AND the trained model -- as one single file.
+joblib.dump(best_pipeline, 'sales_prediction_pipeline.pkl')
+
+# This saves a small text file recording which model won and its
+# score, so you (or anyone else) can check what's inside the .pkl
+# without re-running the entire notebook.
+metadata = {
+    'model_name': best_model,
+    'test_rmse': float(best_test_rmse),
+    'features_used': list(X.columns)
+}
+with open('model_metadata.json', 'w') as f:
+    json.dump(metadata, f, indent=2)
+
+print(f"Saved pipeline: sales_prediction_pipeline.pkl")
+print(f"Saved metadata: model_metadata.json")
+print(f"Winning model was: {best_model}")
+
+daily = df.groupby('Order Date')['Sales'].sum()
+full_range = pd.date_range(daily.index.min(), daily.index.max(), freq='D')
+daily = daily.reindex(full_range, fill_value=0)
+ts = pd.DataFrame({'Sales': daily})
+ts.index.name = 'Date'
+
+ts['day_of_week'] = ts.index.dayofweek
+ts['month'] = ts.index.month
+ts['is_weekend'] = ts['day_of_week'].isin([5, 6]).astype(int)
+ts['is_holiday'] = ts['month'].isin([11, 12]).astype(int)
+ts['lag_1'] = ts['Sales'].shift(1)
+ts['lag_7'] = ts['Sales'].shift(7)
+ts['rolling_7_mean'] = ts['Sales'].shift(1).rolling(7).mean()
+ts = ts.dropna()
+
+split_idx = int(len(ts) * 0.8)
+train_fc, test_fc = ts.iloc[:split_idx], ts.iloc[split_idx:]
+feature_cols = ['day_of_week','month','is_weekend','is_holiday','lag_1','lag_7','rolling_7_mean']
+X_train_fc, y_train_fc = train_fc[feature_cols], train_fc['Sales']
+X_test_fc, y_test_fc = test_fc[feature_cols], test_fc['Sales']
+
+naive_pred = X_test_fc['lag_1'].values
+naive_rmse = np.sqrt(mean_squared_error(y_test_fc, naive_pred))
+
+models_fc = {
+    'Linear Regression': LinearRegression(),
+    'Random Forest': RandomForestRegressor(random_state=42, n_estimators=200),
+    'XGBoost': XGBRegressor(random_state=42, verbosity=0),
+}
+tscv = TimeSeriesSplit(n_splits=5)
+
+results_fc = [['Naive Baseline (lag_1)', np.nan, naive_rmse,
+               mean_absolute_error(y_test_fc, naive_pred), r2_score(y_test_fc, naive_pred)]]
+
+for name, model in models_fc.items():
+    cv_scores = []
+    for tr_idx, val_idx in tscv.split(X_train_fc):
+        m = type(model)(**model.get_params())
+        m.fit(X_train_fc.iloc[tr_idx], y_train_fc.iloc[tr_idx])
+        pred = m.predict(X_train_fc.iloc[val_idx])
+        cv_scores.append(np.sqrt(mean_squared_error(y_train_fc.iloc[val_idx], pred)))
+    model.fit(X_train_fc, y_train_fc)
+    pred_test = model.predict(X_test_fc)
+    results_fc.append([name, np.mean(cv_scores),
+                        np.sqrt(mean_squared_error(y_test_fc, pred_test)),
+                        mean_absolute_error(y_test_fc, pred_test),
+                        r2_score(y_test_fc, pred_test)])
+
+results_df_fc = pd.DataFrame(results_fc, columns=['Model','CV RMSE (TimeSeriesSplit)','Test RMSE','Test MAE','Test R2'])
+print(results_df_fc.to_string(index=False))
